@@ -1,0 +1,30 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Compare Characters Lab
+    // Classroom model: any signed-in user (anonymous auth) in a class may
+    // read the roster and write their own student document. Suitable for a
+    // single-school classroom tool. Tighten later if you add real accounts.
+
+    match /sessions/{code} {
+      // session metadata: anyone signed in can read; create/update allowed
+      // (teacher opens the class, students "merge" it on join).
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null;
+      allow delete: if false;
+
+      match /students/{studentId} {
+        // Everyone signed in can read the class roster (teacher dashboard).
+        allow read: if request.auth != null;
+        // A student may create/update their own progress doc. The doc id is
+        // client-generated; we simply require the writer to be signed in and
+        // the payload to stay small and well-formed.
+        allow create, update: if request.auth != null
+          && request.resource.data.name is string
+          && request.resource.data.name.size() <= 60;
+        allow delete: if false;
+      }
+    }
+  }
+}
