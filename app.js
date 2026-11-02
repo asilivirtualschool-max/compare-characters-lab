@@ -165,7 +165,9 @@ var CARDS={
 
 /* ===================== STATE ===================== */
 var S={role:null,code:null,name:null,studentId:null,tier:'core',ngrt:null,
-  stageIndex:0,placed:false,preScore:null,lowTestFlag:false,stageScores:{},needsSupport:false,usedPush:false,unsub:null};
+  stageIndex:0,placed:false,preScore:null,lowTestFlag:false,stageScores:{},needsSupport:false,usedPush:false,
+  unsub:null,metaUnsub:null,paced:false,releasedIndex:STAGES_LEN()-1,waiting:false};
+function STAGES_LEN(){return 11;} /* kept in sync with STAGES below */
 /* FULL GEM FLOW */
 var STAGES=['pretest','retrieval','donow','keywords','outcome','ido','wedo','affirm','youdo','exit','done'];
 var STAGE_LABEL={pretest:'Pre-test',retrieval:'Retrieval',donow:'Do Now',keywords:'Key Words',outcome:'Learning Outcome',
@@ -206,6 +208,29 @@ function sessionExists(code){
     return fdb.collection('sessions').doc(code).collection('students').limit(1).get().then(function(s){return !s.empty;});
   }).catch(function(){return null;});
 }
+/* Teacher writes pacing on the session doc; students read it live. */
+function setPacing(code, fields){
+  if(!fdb) return Promise.resolve();
+  try{ return fdb.collection('sessions').doc(code).set(fields,{merge:true}).catch(function(){}); }catch(e){ return Promise.resolve(); }
+}
+/* Student subscribes to session meta (paced + releasedIndex). Auto-advances past the wait screen on release. */
+function subscribeMeta(code){
+  if(!fdb||!code) return;
+  if(S.metaUnsub){try{S.metaUnsub();}catch(e){}S.metaUnsub=null;}
+  try{
+    S.metaUnsub=fdb.collection('sessions').doc(code).onSnapshot(function(d){
+      var m=d.exists?(d.data()||{}):{};
+      S.paced = !!m.paced;
+      S.releasedIndex = (typeof m.releasedIndex==='number') ? m.releasedIndex : (STAGES.length-1);
+      // If the student is on the wait screen and the gate has opened, move them on.
+      if(S.waiting && (!S.paced || S.stageIndex <= S.releasedIndex)){
+        S.waiting=false; render();
+      }
+    });
+  }catch(e){}
+}
+/* can the student move to the given target stage index right now? */
+function gateAllows(targetIndex){ return !S.paced || targetIndex <= S.releasedIndex; }
 
 /* ===================== ROUTER ===================== */
 function go(v){location.hash=v;render();}
@@ -261,6 +286,7 @@ function renderDashboard(sc){
     '<button class="btn sky" id="copyCode" type="button">Copy code</button>'+
     '<button class="btn" id="classViewBtn" type="button" style="background:var(--magenta)">▶ Class view</button>'+
     '<button class="btn ghost" style="color:#fff;border-color:rgba(255,255,255,.4)" onclick="go(\'teacher\')">Switch class</button></div>'+
+  '<div class="pace-panel" id="pacePanel"></div>'+
   '<div class="dash-grid" id="stats"></div>'+
   '<div class="slide" style="border-color:var(--line)"><div class="slide-head"><span class="gem">&#128202;</span><h2>Live student progress</h2></div>'+
   '<div class="slide-body"><div id="dashBody" class="loading">Connecting to the class…</div><img class="crest" src="'+LOGO+'" alt=""></div></div>'+
@@ -268,6 +294,44 @@ function renderDashboard(sc){
   el('copyCode').addEventListener('click',function(){var b=this;try{navigator.clipboard.writeText(code).then(function(){b.textContent='Copied!';setTimeout(function(){b.textContent='Copy code';},1500);},function(){b.textContent='Select the code above';});}catch(e){b.textContent='Select the code above';}});
   el('classViewBtn').addEventListener('click',function(){go('classview');});
   subscribeDashboard(code,'dash');
+  subscribeTeacherMeta(code);
+}
+
+/* teacher side: watch pacing meta + render the control panel */
+var TMETA={paced:false,releasedIndex:STAGES.length-1,waitingCount:0};
+function subscribeTeacherMeta(code){
+  if(S.metaUnsub){try{S.metaUnsub();}catch(e){}S.metaUnsub=null;}
+  if(!fdb) { paintPacePanel(); return; }
+  try{
+    S.metaUnsub=fdb.collection('sessions').doc(code).onSnapshot(function(d){
+      var m=d.exists?(d.data()||{}):{};
+      TMETA.paced=!!m.paced;
+      TMETA.releasedIndex=(typeof m.releasedIndex==='number')?m.releasedIndex:(STAGES.length-1);
+      paintPacePanel();
+    });
+  }catch(e){ paintPacePanel(); }
+}
+function paintPacePanel(){
+  var p=el('pacePanel'); if(!p) return;
+  var relName=STAGE_LABEL[STAGES[Math.min(TMETA.releasedIndex,STAGES.length-1)]];
+  var atLast=TMETA.releasedIndex>=STAGES.length-1, atFirst=TMETA.releasedIndex<=0;
+  if(!TMETA.paced){
+    p.innerHTML='<div class="pace-row"><div><b>Pace:</b> Free — students move at their own speed.</div><div class="sp"></div>'+
+      '<button class="btn" id="paceOn">Turn on teacher-paced</button></div>';
+    el('paceOn').addEventListener('click',function(){
+      // when turning on, release up to the furthest stage any student has reached (so nobody is stuck behind), min current
+      setPacing(S.code,{paced:true,releasedIndex:(typeof TMETA.releasedIndex==='number'?TMETA.releasedIndex:0)});
+    });
+  }else{
+    p.innerHTML='<div class="pace-row"><div><span class="pace-badge">Teacher-paced</span> Class can work up to: <b>'+esc(relName)+'</b>'+
+      (TMETA.waitingCount?' · <span class="pace-wait">'+TMETA.waitingCount+' waiting at the gate</span>':'')+'</div><div class="sp"></div>'+
+      '<button class="btn ghost" id="paceBack" '+(atFirst?'disabled':'')+'>◀ Hold back</button>'+
+      '<button class="btn" id="paceNext" '+(atLast?'disabled':'')+'>Release next ▶</button>'+
+      '<button class="btn ghost" id="paceOff">Free pace</button></div>';
+    el('paceNext').addEventListener('click',function(){ setPacing(S.code,{paced:true,releasedIndex:Math.min(TMETA.releasedIndex+1,STAGES.length-1)}); });
+    el('paceBack').addEventListener('click',function(){ setPacing(S.code,{paced:true,releasedIndex:Math.max(TMETA.releasedIndex-1,0)}); });
+    el('paceOff').addEventListener('click',function(){ setPacing(S.code,{paced:false}); });
+  }
 }
 
 /* ---------------- CLASS VIEW (anonymous, projector) ---------------- */
@@ -303,6 +367,9 @@ function paintDashboard(rows){
   var n=rows.length,done=rows.filter(function(r){return r.stage==='done';}).length;
   var support=rows.filter(function(r){return r.tier==='support'||r.needsSupport||r.lowTestFlag;}).length;
   var avg=n?Math.round(rows.reduce(function(s,r){return s+(r.percent||0);},0)/n):0;
+  // waiting at the gate = students who have reached the released edge and can't go further
+  TMETA.waitingCount = TMETA.paced ? rows.filter(function(r){return (r.stageIndex||0)>=TMETA.releasedIndex && r.stage!=='done';}).length : 0;
+  paintPacePanel();
   el('stats').innerHTML=stat(n,'Students joined')+stat(avg+'%','Average progress')+stat(done+' / '+n,'Finished lesson')+stat(support,'Flagged for support');
   if(!n){el('dashBody').innerHTML='<div class="empty">No students yet. Share the code to begin.</div>';return;}
   var head='<tr><th>Student</th><th>Path</th><th>NGRT</th><th>Pre-test</th><th>Stage</th><th>Progress</th><th>Flags</th></tr>';
@@ -367,7 +434,7 @@ function renderJoin(sc){
     btn.disabled=true;btn.textContent='Joining…';
     sessionExists(code).then(function(ex){
       if(fdb&&ex===false){f.className='fb show no';f.textContent='That code isn’t open. Check it with your teacher.';btn.disabled=false;btn.textContent='Start →';return;}
-      S.code=code;S.name=name;S.studentId=makeId();S.stageIndex=0;ensureSession(code);saveStudent();render();
+      S.code=code;S.name=name;S.studentId=makeId();S.stageIndex=0;ensureSession(code);subscribeMeta(code);saveStudent();render();
     });
   });
 }
@@ -386,9 +453,22 @@ function renderStage(sc){
     '<span class="chip '+(S.tier==='support'?'support':S.tier==='push'?'push':'core')+'">'+esc(S.tier)+' path</span>'+
     (S.lowTestFlag?'<span class="flag warn">teacher: check me</span>':'')+
     '<span style="color:var(--ink-soft);font-size:.85rem">'+esc(S.name)+'</span></div>'+stepBar();
+  if(S.waiting && !gateAllows(Math.min(S.stageIndex+1,STAGES.length-1))){
+    sc.innerHTML=top+stageWait(); return;
+  }
   var body=({pretest:stagePretest,retrieval:stageRetrieval,donow:stageDoNow,keywords:stageKeywords,outcome:stageOutcome,
     ido:stageIDo,wedo:stageWeDo,affirm:stageAffirm,youdo:stageYouDo,exit:stageExit,done:stageDone}[stage])();
   sc.innerHTML=top+body; wireStage(stage);
+}
+function stageWait(){
+  var nextName=STAGE_LABEL[STAGES[Math.min(S.stageIndex+1,STAGES.length-1)]];
+  return '<div class="slide"><div class="slide-head teal"><span class="gem">&#10073;&#10073;</span><h2>Pause here</h2></div>'+
+  '<div class="slide-body" style="text-align:center;padding-bottom:40px">'+
+    '<div style="font-size:2.6rem;margin:8px 0">&#9201;&#65039;</div>'+
+    '<p class="inquiry" style="margin:0 auto 6px;max-width:30ch">Well done, '+esc(S.name)+' — you’ve finished this part.</p>'+
+    '<p class="muted">Waiting for your teacher to release <b>'+esc(nextName)+'</b>. This will continue on its own — keep your eyes up front. &#9733;</p>'+
+    '<div class="wait-dots"><span></span><span></span><span></span></div>'+
+    '<img class="crest" src="'+LOGO+'" alt=""></div></div>';
 }
 
 /* ---- generic MCQ block ---- */
@@ -668,7 +748,11 @@ function wireStage(stage){
   }
 }
 function val(id){var e=el(id);return e?(e.value||'').trim():'';}
-function advance(){S.stageIndex=Math.min(S.stageIndex+1,STAGES.length-1);saveStudent();window.scrollTo({top:0,behavior:'smooth'});render();}
+function advance(){
+  var target=Math.min(S.stageIndex+1,STAGES.length-1);
+  if(!gateAllows(target)){ S.waiting=true; saveStudent(); window.scrollTo({top:0,behavior:'smooth'}); render(); return; }
+  S.stageIndex=target; S.waiting=false; saveStudent(); window.scrollTo({top:0,behavior:'smooth'}); render();
+}
 
 /* ---------------- boot ---------------- */
 (function(){var bl=el('brandLogo');if(bl)bl.src=LOGO;})();
