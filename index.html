@@ -218,6 +218,19 @@ body.projector .brand,body.projector #themeBtn{display:none}
 .cv-bar{height:12px;border-radius:99px;background:var(--line);overflow:hidden;margin-bottom:8px}
 .cv-bar i{display:block;height:100%;background:linear-gradient(90deg,var(--sky),var(--teal))}
 .cv-stage{font-size:.84rem;color:var(--ink-soft);font-weight:700}
+/* ---------- teacher pacing panel ---------- */
+.pace-panel{background:var(--card);border:1.5px solid var(--line);border-radius:16px;padding:12px 16px;margin-bottom:14px;box-shadow:var(--shadow-sm)}
+.pace-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:.95rem}
+.pace-row .sp{flex:1}
+.pace-row .btn{padding:9px 16px;font-size:.9rem}
+.pace-badge{display:inline-block;background:var(--teal);color:#fff;font-weight:700;font-size:.75rem;padding:3px 10px;border-radius:999px;margin-right:6px}
+.pace-wait{color:var(--warn);font-weight:700}
+/* ---------- student wait screen ---------- */
+.wait-dots{display:flex;gap:8px;justify-content:center;margin:18px 0 4px}
+.wait-dots span{width:12px;height:12px;border-radius:50%;background:var(--teal);opacity:.3;animation:waitpulse 1.2s infinite}
+.wait-dots span:nth-child(2){animation-delay:.2s}.wait-dots span:nth-child(3){animation-delay:.4s}
+@keyframes waitpulse{0%,100%{opacity:.3;transform:scale(1)}50%{opacity:1;transform:scale(1.25)}}
+@media(prefers-reduced-motion:reduce){.wait-dots span{animation:none;opacity:.7}}
 </style>
 </head>
 <body>

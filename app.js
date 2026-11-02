@@ -166,7 +166,7 @@ var CARDS={
 /* ===================== STATE ===================== */
 var S={role:null,code:null,name:null,studentId:null,tier:'core',ngrt:null,
   stageIndex:0,placed:false,preScore:null,lowTestFlag:false,stageScores:{},needsSupport:false,usedPush:false,
-  unsub:null,metaUnsub:null,paced:false,releasedIndex:STAGES_LEN()-1,waiting:false};
+  unsub:null,metaUnsub:null,paced:false,releasedIndex:STAGES_LEN()-1,waiting:false,pinOk:false,presentIdx:1};
 function STAGES_LEN(){return 11;} /* kept in sync with STAGES below */
 /* FULL GEM FLOW */
 var STAGES=['pretest','retrieval','donow','keywords','outcome','ido','wedo','affirm','youdo','exit','done'];
@@ -266,21 +266,66 @@ function renderTeacher(sc){
   var existing='';try{existing=localStorage.getItem('ccl-teacher-code')||'';}catch(e){}
   sc.innerHTML=
   '<div class="slide"><div class="slide-head teal"><span class="gem">&#128218;</span><h2>Teacher — open a class</h2></div>'+
-  '<div class="slide-body"><p>Create a class code and share it with your students. Their progress appears on your dashboard in real time.</p>'+
-    '<div class="btn-row"><button class="btn" id="newClassBtn">+ Create new class code</button></div>'+
+  '<div class="slide-body"><p>Create a class code and share it with your students. You set a <b>teacher PIN</b> that unlocks the dashboard and pacing — students don’t need it to join.</p>'+
+    '<label class="fld" for="newPin">Teacher PIN (4–6 digits) for the new class</label>'+
+    '<div style="display:flex;gap:10px;flex-wrap:wrap"><input class="in" id="newPin" inputmode="numeric" maxlength="6" placeholder="e.g. 2025" style="max-width:160px;letter-spacing:.2em;text-align:center;font-weight:700">'+
+      '<button class="btn" id="newClassBtn">+ Create class</button></div>'+
+    '<div style="border-top:1px solid var(--line);margin:18px 0 0"></div>'+
     '<label class="fld" for="reopenCode">Reopen an existing code</label>'+
     '<div style="display:flex;gap:10px;flex-wrap:wrap"><input class="in code-in" id="reopenCode" maxlength="5" placeholder="ABCDE" style="max-width:220px" value="'+esc(existing)+'">'+
       '<button class="btn ghost" id="reopenBtn">Open dashboard</button></div>'+
     '<div class="fb no" id="tFb"></div><img class="crest" src="'+LOGO+'" alt=""></div></div>'+
     '<div class="btn-row"><button class="btn ghost" onclick="go(\'\')">&#8592; Back</button></div>';
-  el('newClassBtn').addEventListener('click',function(){var code=makeCode();ensureSession(code);try{localStorage.setItem('ccl-teacher-code',code);}catch(e){}S.code=code;go('dashboard');});
+  el('newClassBtn').addEventListener('click',function(){
+    var pin=(el('newPin').value||'').trim(), f=el('tFb');
+    if(!/^\d{4,6}$/.test(pin)){f.className='fb show no';f.textContent='Set a 4–6 digit PIN for this class first.';return;}
+    var code=makeCode();
+    ensureSession(code); setPacing(code,{pin:pin}); // store PIN on the session
+    try{localStorage.setItem('ccl-teacher-code',code);localStorage.setItem('ccl-pin-'+code,pin);}catch(e){}
+    S.code=code; S.pinOk=true; go('dashboard');
+  });
   el('reopenBtn').addEventListener('click',function(){var code=(el('reopenCode').value||'').trim().toUpperCase();if(code.length!==5){var f=el('tFb');f.className='fb show no';f.textContent='Enter the 5-letter code.';return;}S.code=code;try{localStorage.setItem('ccl-teacher-code',code);}catch(e){}go('dashboard');});
 }
+
+/* ---- PIN gate: returns true if cleared, otherwise renders the prompt into sc ---- */
+function pinCleared(code){
+  if(S.pinOk) return true;
+  var saved=''; try{saved=localStorage.getItem('ccl-pin-'+code)||'';}catch(e){}
+  if(saved){ S.pinOk=true; return true; }
+  return false;
+}
+function renderPinPrompt(sc,code,next){
+  sc.innerHTML=
+  '<div class="slide"><div class="slide-head"><span class="gem">&#128274;</span><h2>Teacher PIN</h2></div>'+
+  '<div class="slide-body"><p>Enter the PIN for class <b class="tnum">'+esc(code)+'</b> to open the teacher view.</p>'+
+    '<input class="in" id="pinIn" inputmode="numeric" maxlength="6" placeholder="PIN" style="max-width:180px;letter-spacing:.3em;text-align:center;font-weight:700;font-size:1.3rem">'+
+    '<div class="fb no" id="pinFb"></div>'+
+    '<div class="btn-row"><button class="btn" id="pinGo">Unlock</button><button class="btn ghost" onclick="go(\'teacher\')">&#8592; Back</button></div>'+
+    '<img class="crest" src="'+LOGO+'" alt=""></div></div>';
+  var tryPin=function(){
+    var entered=(el('pinIn').value||'').trim();
+    if(!fdb){ // offline: accept any device-saved pin only
+      var saved=''; try{saved=localStorage.getItem('ccl-pin-'+code)||'';}catch(e){}
+      if(saved&&entered===saved){clearPinOk(code,entered);next();}else{el('pinFb').className='fb show no';el('pinFb').textContent='No database connection to check the PIN.';}
+      return;
+    }
+    fdb.collection('sessions').doc(code).get().then(function(d){
+      var m=d.exists?(d.data()||{}):{};
+      if(!m.pin){ clearPinOk(code,entered); next(); return; } // class has no PIN set
+      if(entered===String(m.pin)){ clearPinOk(code,entered); next(); }
+      else { el('pinFb').className='fb show no'; el('pinFb').textContent='Incorrect PIN. Try again.'; }
+    }).catch(function(){ el('pinFb').className='fb show no'; el('pinFb').textContent='Could not check the PIN — try again.'; });
+  };
+  el('pinGo').addEventListener('click',tryPin);
+  el('pinIn').addEventListener('keydown',function(e){if(e.key==='Enter')tryPin();});
+}
+function clearPinOk(code,pin){ S.pinOk=true; try{localStorage.setItem('ccl-pin-'+code,pin);}catch(e){} }
 
 /* ---------------- DASHBOARD ---------------- */
 function renderDashboard(sc){
   var code=S.code;try{if(!code)code=localStorage.getItem('ccl-teacher-code');}catch(e){}
   S.code=code; if(!code) return go('teacher');
+  if(!pinCleared(code)){ return renderPinPrompt(sc,code,function(){go('dashboard');}); }
   sc.innerHTML=
   '<div class="codebox"><div><div class="lb">Class code — share with students</div><div class="big tnum" id="codeShow">'+esc(code)+'</div></div><div class="sp"></div>'+
     '<button class="btn sky" id="copyCode" type="button">Copy code</button>'+
@@ -308,6 +353,7 @@ function subscribeTeacherMeta(code){
       TMETA.paced=!!m.paced;
       TMETA.releasedIndex=(typeof m.releasedIndex==='number')?m.releasedIndex:(STAGES.length-1);
       paintPacePanel();
+      if(cvMode==='present' && el('cvPresentCtrl')) paintPresent();
     });
   }catch(e){ paintPacePanel(); }
 }
@@ -335,18 +381,63 @@ function paintPacePanel(){
 }
 
 /* ---------------- CLASS VIEW (anonymous, projector) ---------------- */
+var cvMode='progress'; /* 'progress' | 'present' */
 function renderClassView(sc){
   var code=S.code;try{if(!code)code=localStorage.getItem('ccl-teacher-code');}catch(e){}
   S.code=code; if(!code) return go('teacher');
+  if(!pinCleared(code)){ document.body.classList.remove('projector'); return renderPinPrompt(sc,code,function(){go('classview');}); }
   document.body.classList.add('projector');
   sc.innerHTML=
-  '<div class="cv-top"><div><div class="cv-lb">Class progress — code <b class="tnum">'+esc(code)+'</b></div></div><div class="sp"></div>'+
-    '<button class="btn ghost" id="cvExit" type="button">Exit class view</button></div>'+
+  '<div class="cv-top"><div class="cv-lb">Class — code <b class="tnum">'+esc(code)+'</b></div>'+
+    '<div class="cv-modes"><button class="cv-mode'+(cvMode==='progress'?' on':'')+'" id="cvModeProg">Progress wall</button>'+
+    '<button class="cv-mode'+(cvMode==='present'?' on':'')+'" id="cvModePres">Present the lesson</button></div>'+
+    '<div class="sp"></div>'+
+    '<button class="btn ghost" id="cvExit" type="button">Exit</button></div>'+
+  '<div id="cvPresentCtrl"></div>'+
   '<div class="cv-stats" id="cvStats"></div>'+
   '<div class="cv-stage-legend" id="cvLegend"></div>'+
   '<div id="cvBody" class="loading" style="font-size:1.1rem">Waiting for students…</div>';
   el('cvExit').addEventListener('click',function(){document.body.classList.remove('projector');go('dashboard');});
+  el('cvModeProg').addEventListener('click',function(){cvMode='progress';renderClassView(el('screen'));});
+  el('cvModePres').addEventListener('click',function(){cvMode='present';renderClassView(el('screen'));});
+  subscribeTeacherMeta(code);     // keep releasedIndex live for present controls
   subscribeDashboard(code,'classview');
+  if(cvMode==='present'){ el('cvStats').style.display='none'; el('cvLegend').style.display='none'; paintPresent(); }
+}
+
+/* Present mode: show the current (released) stage big, teacher advances the class */
+function PRESENT_STAGES(){ return STAGES.filter(function(s){return s!=='pretest'&&s!=='done';}); }
+function paintPresent(){
+  var ctrl=el('cvPresentCtrl'), body=el('cvBody'); if(!ctrl||!body) return;
+  var idx = TMETA.paced ? TMETA.releasedIndex : S.presentIdx;
+  if(typeof idx!=='number') idx = 1; // default to retrieval/first teachable
+  idx=Math.max(0,Math.min(idx,STAGES.length-1));
+  var stage=STAGES[idx];
+  var atFirst=idx<=1, atLast=idx>=STAGES.length-2; // skip pretest(0) and done(last)
+  ctrl.innerHTML='<div class="present-ctrl"><button class="btn ghost" id="prBack" '+(atFirst?'disabled':'')+'>◀ Back</button>'+
+    '<div class="present-now">Now showing: <b>'+esc(STAGE_LABEL[stage])+'</b>'+(TMETA.paced?' · <span style="color:var(--gold)">class released to here</span>':'')+'</div>'+
+    '<button class="btn" id="prNext" '+(atLast?'disabled':'')+'>Advance class ▶</button></div>';
+  el('prBack').addEventListener('click',function(){ presentMove(-1); });
+  el('prNext').addEventListener('click',function(){ presentMove(1); });
+  // render the stage content big + read-only
+  var html=presentStageHTML(stage);
+  body.className=''; body.innerHTML='<div class="present-stage">'+html+'</div>';
+  // disable any interactive controls inside the projected content
+  body.querySelectorAll('button,textarea,input,select').forEach(function(x){x.setAttribute('disabled','');x.style.pointerEvents='none';});
+}
+function presentMove(dir){
+  var cur = TMETA.paced ? TMETA.releasedIndex : (typeof S.presentIdx==='number'?S.presentIdx:1);
+  var next=Math.max(1,Math.min(cur+dir,STAGES.length-2));
+  if(TMETA.paced){ setPacing(S.code,{paced:true,releasedIndex:next}); } // moves the class too
+  else { S.presentIdx=next; }
+  // optimistic repaint; teacher-meta snapshot will also refresh
+  TMETA.releasedIndex = TMETA.paced ? next : TMETA.releasedIndex;
+  paintPresent();
+}
+function presentStageHTML(stage){
+  var fn={retrieval:stageRetrieval,donow:stageDoNow,keywords:stageKeywords,outcome:stageOutcome,
+    ido:stageIDo,wedo:stageWeDo,affirm:stageAffirm,youdo:stageYouDo,exit:stageExit}[stage];
+  return fn?fn():'<div class="slide"><div class="slide-body"><p>'+esc(STAGE_LABEL[stage])+'</p></div></div>';
 }
 
 function subscribeDashboard(code,mode){
